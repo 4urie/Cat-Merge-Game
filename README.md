@@ -10,6 +10,8 @@ The game source code is licensed under the [MIT License](LICENSE). The bundled f
 
 ## Run
 
+New to the codebase? Start with the [Cat Merge learning guide](LEARN.md).
+
 ```sh
 npm install
 npm run dev
@@ -37,6 +39,7 @@ Open http://localhost:3000. For production, run `npm run build` followed by `npm
 | `app/game/bridge.ts` | Typed per-instance event bridge, tier names, radii, initial state |
 | `app/globals.css` | Paper grid, sketch cards, responsive layout, local fonts |
 | `app/layout.tsx` | Document metadata |
+| `LEARN.md` | Guided project tour and hands-on learning ideas |
 | `public/assets/cats/` | Ten cat PNGs served to the game; tiers 7 and 9 are losslessly re-encoded repairs |
 | `source-assets/` | Byte-for-byte backups of the truncated tier 7 and 9 PNGs |
 | `public/fonts/` | Self-hosted Lilita One and Patrick Hand, with SIL font licenses |
