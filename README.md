@@ -2,6 +2,8 @@
 
 A single-player cat merging game in a hand-drawn notebook. Built in the existing Next.js / TypeScript project with Phaser 3 and its bundled Matter.js engine.
 
+<img src="public/assets/ui/Screenshot 2026-10-20 233438.png" width="1000" alt="ss">
+
 ## Run
 
 ```sh
