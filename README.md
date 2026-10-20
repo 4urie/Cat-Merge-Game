@@ -2,6 +2,8 @@
 
 A single-player cat merging game in a hand-drawn notebook. Built in the existing Next.js / TypeScript project with Phaser 3 and its bundled Matter.js engine.
 
+<img src="public/assets/ui/Screenshot 2026-10-20 233438.png" width="1000" alt="Cat Merge gameplay screenshot">
+
 ## License
 
 The game source code is licensed under the [MIT License](LICENSE). The bundled fonts remain under the SIL Open Font License; see their license files in `public/fonts/`. The cat artwork in `public/assets/cats/` and its backups in `source-assets/` are not covered by the MIT license; obtain permission from the applicable rights holder before reusing or redistributing those files.
