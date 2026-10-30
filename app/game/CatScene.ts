@@ -1,4 +1,5 @@
 import * as Phaser from "phaser";
+import { Squish } from "./Squish";
 import {
   catPath,
   GameBridge,
@@ -13,6 +14,17 @@ type Cat = {
   born: number;
   claimed: boolean;
   dangerSince: number;
+  artwork: Phaser.GameObjects.Image;
+  visual: Phaser.GameObjects.Container;
+  squish: Squish;
+};
+// Phaser's bundled Matter has contactCount/normalImpulse, but its public
+// collision event types omit these solver fields.
+type ContactPair = Omit<MatterJS.ICollisionPair, "bodyA" | "bodyB" | "contacts"> & {
+  bodyA: MatterJS.BodyType;
+  bodyB: MatterJS.BodyType;
+  contactCount: number;
+  contacts: { normalImpulse: number }[];
 };
 const BASE_WIDTH = 480;
 const BASE_HEIGHT = 600;
@@ -118,7 +130,9 @@ export default class CatScene extends Phaser.Scene {
       }
     });
     this.matter.world.on("collisionstart", this.collide, this);
+    this.matter.world.on("collisionstart", this.squishOnImpact, this);
     this.matter.world.on("collisionactive", this.collide, this);
+    this.matter.world.on("afterupdate", this.updateSquish, this);
     this.subscriptions = [
       this.bridge.on("restart", () => this.restart()),
       this.bridge.on("sound", () => {
@@ -150,7 +164,9 @@ export default class CatScene extends Phaser.Scene {
     this.events.once("shutdown", () => {
       this.subscriptions.forEach((unsubscribe) => unsubscribe());
       this.matter.world.off("collisionstart", this.collide, this);
+      this.matter.world.off("collisionstart", this.squishOnImpact, this);
       this.matter.world.off("collisionactive", this.collide, this);
+      this.matter.world.off("afterupdate", this.updateSquish, this);
       this.scale.off(Phaser.Scale.Events.RESIZE, this.resize, this);
       void this.audio?.close();
     });
@@ -184,6 +200,8 @@ export default class CatScene extends Phaser.Scene {
         this.setCatBody(cat.sprite, cat.tier);
         cat.sprite.setVelocity(velocity.x * (this.width / oldWidth), velocity.y * (this.height / oldHeight));
         cat.sprite.setAngularVelocity(angularVelocity);
+        cat.artwork.setDisplaySize(this.radius(cat.tier) * 2.15, this.radius(cat.tier) * 2.22);
+        this.renderCat(cat);
         resizedCats.set((cat.sprite.body as MatterJS.BodyType).id, cat);
       }
       this.cats = resizedCats;
@@ -286,13 +304,21 @@ export default class CatScene extends Phaser.Scene {
     );
     this.sizeCat(sprite, tier);
     this.setCatBody(sprite, tier);
-    sprite.setDepth(5);
+    // Separate artwork from the Matter Image: public scale setters on a Matter
+    // Image resize its body, so deformation belongs on ordinary Game Objects.
+    sprite.setVisible(false);
+    const artwork = this.add.image(0, 0, `cat-${tier}`, "trimmed")
+      .setDisplaySize(radius * 2.15, radius * 2.22);
+    const visual = this.add.container(sprite.x, sprite.y, [artwork]).setDepth(5);
     const cat: Cat = {
       sprite,
       tier,
       born: this.time.now,
       claimed: false,
       dangerSince: 0,
+      artwork,
+      visual,
+      squish: new Squish(),
     };
     this.cats.set((sprite.body as MatterJS.BodyType).id, cat);
     return cat;
@@ -336,15 +362,84 @@ export default class CatScene extends Phaser.Scene {
     }
   }
 
+  private squishOnImpact(event: Phaser.Physics.Matter.Events.CollisionStartEvent) {
+    if (this.paused || this.state.status !== "playing") return;
+    for (const pair of event.pairs) {
+      const normal = pair.collision.normal;
+      // collisionstart runs before Matter's velocity solver. Only closing speed
+      // along the contact normal contributes; sliding is not another impact.
+      const speed = Math.max(0, -(
+        (pair.bodyA.velocity.x - pair.bodyB.velocity.x) * normal.x +
+        (pair.bodyA.velocity.y - pair.bodyB.velocity.y) * normal.y
+      )) / Math.sqrt(this.unit);
+      for (const body of [pair.bodyA, pair.bodyB]) {
+        const cat = this.cats.get(body.id);
+        if (!cat || cat.claimed) continue;
+        cat.squish.impact(normal.x, normal.y, speed);
+      }
+    }
+  }
+
+  private updateSquish(event: { delta: number }) {
+    if (this.paused || this.state.status !== "playing") return;
+    for (const cat of this.cats.values()) cat.squish.beginContacts();
+    const engine = this.matter.world.engine;
+    const pairs = engine.pairs.list as ContactPair[];
+    // Compare support impulses to one cat's weight. This makes a cat under a
+    // tall pile softer than a lone resting cat, independently of pixel density.
+    const gravity = this.matter.world.localWorld.gravity;
+    const gravityStep = Math.max(0.01, Math.abs(gravity.y * gravity.scale) * event.delta * event.delta);
+    for (const pair of pairs) {
+      if (!pair.isActive || pair.isSensor) continue;
+      let impulse = 0;
+      for (let i = 0; i < pair.contactCount; i++)
+        impulse += Math.abs(pair.contacts[i].normalImpulse);
+      const { normal, depth } = pair.collision;
+      for (const body of [pair.bodyA, pair.bodyB]) {
+        const cat = this.cats.get(body.id);
+        if (!cat || cat.claimed) continue;
+        const weight = body.mass * gravityStep;
+        const load = Number.isFinite(weight) ? impulse / Math.max(weight, 0.001) : 0;
+        const pressure = Math.min(0.13, 0.018 + load * 0.026 + Math.max(0, depth - pair.slop) / this.radius(cat.tier) * 0.15);
+        const sign = body === pair.bodyA ? -1 : 1;
+        cat.squish.contact(normal.x * sign, normal.y * sign, pressure);
+      }
+    }
+    for (const cat of this.cats.values()) {
+      cat.squish.step(event.delta / 1000);
+      this.renderCat(cat);
+    }
+  }
+
+  private renderCat(cat: Cat) {
+    const { xx, xy, yy, anchorX, anchorY } = cat.squish;
+    // Principal axes let diagonal contacts compress in their actual direction.
+    // Counter-rotate the child so the artwork still follows the body's rotation.
+    const angle = Math.atan2(2 * xy, xx - yy) / 2;
+    const mean = (xx + yy) / 2;
+    const spread = Math.hypot((xx - yy) / 2, xy);
+    const scaleX = 1 + Phaser.Math.Clamp(mean + spread, -0.20, 0.14);
+    const scaleY = 1 + Phaser.Math.Clamp(mean - spread, -0.20, 0.14);
+    const radius = this.radius(cat.tier);
+    const offsetX = Phaser.Math.Clamp(-(xx * anchorX + xy * anchorY) * 0.75, -0.10, 0.10) * radius;
+    const offsetY = Phaser.Math.Clamp(-(xy * anchorX + yy * anchorY) * 0.75, -0.10, 0.10) * radius;
+    cat.visual.setPosition(cat.sprite.x + offsetX, cat.sprite.y + offsetY)
+      .setRotation(angle).setScale(scaleX, scaleY);
+    cat.artwork.setRotation(cat.sprite.rotation - angle);
+  }
+
   private merge(a: Cat, b: Cat) {
     const x = (a.sprite.x + b.sprite.x) / 2,
       y = (a.sprite.y + b.sprite.y) / 2;
     const tier = a.tier + 1;
     for (const cat of [a, b]) {
       this.cats.delete((cat.sprite.body as MatterJS.BodyType).id);
+      cat.visual.destroy();
       cat.sprite.destroy();
     }
-    this.spawn(tier, x, y).sprite.setVelocity(0, -1.3);
+    const merged = this.spawn(tier, x, y);
+    merged.sprite.setVelocity(0, -1.3);
+    merged.squish.impact(0, 1, 8);
     const points = 2 ** tier;
     this.state.score += points;
     this.state.highest = Math.max(this.state.highest, tier);
@@ -408,7 +503,10 @@ export default class CatScene extends Phaser.Scene {
 
   private restart() {
     this.pendingMerges = [];
-    for (const cat of this.cats.values()) cat.sprite.destroy();
+    for (const cat of this.cats.values()) {
+      cat.visual.destroy();
+      cat.sprite.destroy();
+    }
     this.cats.clear();
     this.state = {
       ...this.state,
